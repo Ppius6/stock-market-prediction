@@ -1,0 +1,38 @@
+FROM python:3.10-slim
+
+LABEL maintainer="stock-prediction-team"
+LABEL description="Real-time data streaming and ingestion service"
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install only data processing dependencies (minimal)
+RUN pip install --no-cache-dir \
+    pandas==2.1.4 \
+    numpy==1.26.2 \
+    psycopg2-binary==2.9.9 \
+    python-dotenv==1.0.0 \
+    pytz==2023.3 \
+    requests==2.31.0 \
+    sqlalchemy==2.0.25
+
+# Copy application code
+COPY data/scripts/ ./data/scripts/
+COPY src/ ./src/
+
+# Create data directories
+RUN mkdir -p data/raw data/processed
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Default command
+CMD ["python", "data/scripts/stream_processor.py"]

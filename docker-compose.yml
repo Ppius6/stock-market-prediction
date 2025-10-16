@@ -1,0 +1,165 @@
+services:
+  postgres:
+    image: postgres:14
+    container_name: mlflow-postgres
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${MLFLOW_DB_USER:-mlflow}
+      POSTGRES_PASSWORD: ${MLFLOW_DB_PASSWORD:-mlflow}
+      POSTGRES_DB: ${MLFLOW_DB_NAME:-mlflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ml_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mlflow
+    container_name: mlflow-server
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    environment:
+      - BACKEND_STORE_URI=${MLFLOW_BACKEND_STORE_URI}
+      - ARTIFACT_ROOT=${MLFLOW_ARTIFACT_ROOT}
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ml_network
+    command: >
+      mlflow server 
+      --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
+      --default-artifact-root ${MLFLOW_ARTIFACT_ROOT}
+      --host 0.0.0.0
+      --port 5000
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  training:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.training
+    container_name: model-training
+    env_file:
+      - .env
+    environment:
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./src:/app/src
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    networks:
+      - ml_network
+    command: python models/train.py
+    profiles:
+      - training
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: prediction-api
+    env_file:
+      - .env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
+      - MODEL_NAME=${MODEL_NAME}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - ./api:/app/api
+      - ./src:/app/src
+      - model_cache:/app/model_cache
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    networks:
+      - ml_network
+    command: uvicorn api.app:app --host 0.0.0.0 --port 8000 --workers 2
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+      replicas: 1  # Can scale to 3 for high traffic
+
+  streaming:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.streaming
+    container_name: data-streaming
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - ml_network
+    command: python data/scripts/stream_processor.py
+    profiles:
+      - streaming
+    restart: on-failure
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  postgres_data:
+  mlflow_artifacts:
+  model_cache:
+
+networks:
+  ml_network:
+    driver: bridge
