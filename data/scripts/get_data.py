@@ -232,7 +232,9 @@ def load_local_data(format="parquet"):
     Returns:
         DataFrame with all stock data or None if file not found/error.
     """
-    raw_dir = Path("data/raw")
+    # Get project root directory (2 levels up from this script)
+    project_root = Path(__file__).parent.parent.parent
+    raw_dir = project_root / "data" / "raw"
     if format == "parquet":
         file_path = raw_dir / "all_stocks_historical.parquet"
         if file_path.exists():
